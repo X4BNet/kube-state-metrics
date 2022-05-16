@@ -155,6 +155,27 @@ func cronJobMetricFamilies(allowAnnotationsList, allowLabelsList []string) []gen
 			}),
 		),
 		*generator.NewFamilyGenerator(
+			"kube_cronjob_status_last_successful_time",
+			"LastSuccessfulTime keeps information of when was the last time the job was completed successfuly.",
+			metric.Gauge,
+			"",
+			wrapCronJobFunc(func(j *batchv1.CronJob) *metric.Family {
+				ms := []*metric.Metric{}
+
+				if j.Status.LastSuccessfulTime != nil {
+					ms = append(ms, &metric.Metric{
+						LabelKeys:   []string{},
+						LabelValues: []string{},
+						Value:       float64(j.Status.LastSuccessfulTime.Unix()),
+					})
+				}
+
+				return &metric.Family{
+					Metrics: ms,
+				}
+			}),
+		),
+		*generator.NewFamilyGenerator(
 			"kube_cronjob_spec_suspend",
 			"Suspend flag tells the controller to suspend subsequent executions.",
 			metric.Gauge,
@@ -214,6 +235,31 @@ func cronJobMetricFamilies(allowAnnotationsList, allowLabelsList []string) []gen
 						LabelKeys:   []string{},
 						LabelValues: []string{},
 						Value:       float64(nextScheduledTime.Unix()),
+					})
+				}
+
+				return &metric.Family{
+					Metrics: ms,
+				}
+			}),
+		),
+		*generator.NewFamilyGenerator(
+			"kube_cronjob_next_schedule_time",
+			"Next time the cronjob should be scheduled. The time after lastSuccessfulTime, or after the cron job's creation time if it's never been scheduled. Use this to determine if the job is delayed.",
+			metric.Gauge,
+			"",
+			wrapCronJobFunc(func(j *batchv1.CronJob) *metric.Family {
+				ms := []*metric.Metric{}
+
+				// If the cron job is suspended, don't track the next scheduled time
+				nextSuccessfulTime, err := getNextSuccessfulTime(j.Spec.Schedule, j.Status.LastSuccessfulTime, j.CreationTimestamp)
+				if err != nil {
+					panic(err)
+				} else if !*j.Spec.Suspend {
+					ms = append(ms, &metric.Metric{
+						LabelKeys:   []string{},
+						LabelValues: []string{},
+						Value:       float64(nextSuccessfulTime.Unix()),
 					})
 				}
 
@@ -317,4 +363,17 @@ func getNextScheduledTime(schedule string, lastScheduleTime *metav1.Time, create
 		return sched.Next(createdTime.Time), nil
 	}
 	return time.Time{}, errors.New("createdTime and lastScheduleTime are both zero")
+}
+func getNextSuccessfulTime(schedule string, lastSuccessfulTime *metav1.Time, createdTime metav1.Time) (time.Time, error) {
+	sched, err := cron.ParseStandard(schedule)
+	if err != nil {
+		return time.Time{}, errors.Wrapf(err, "Failed to parse cron job schedule '%s'", schedule)
+	}
+	if !lastSuccessfulTime.IsZero() {
+		return sched.Next(lastSuccessfulTime.Time), nil
+	}
+	if !createdTime.IsZero() {
+		return sched.Next(createdTime.Time), nil
+	}
+	return time.Time{}, errors.New("createdTime and lastSuccessfulTime are both zero")
 }
